@@ -1,3 +1,4 @@
+import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
@@ -17,7 +18,7 @@ async def start_add_ad(message: types.Message, state: FSMContext):
     builder.button(text="🛠 Boshqalar")
     builder.button(text="❌ Bekor qilish")
     builder.adjust(2, 2, 1, 1)
-    
+
     await message.answer(
         "E'lon berish uchun quyidagi kategoriyalardan birini tanlang:",
         reply_markup=builder.as_markup(resize_keyboard=True)
@@ -35,7 +36,7 @@ async def cancel_handler(message: types.Message, state: FSMContext):
 async def process_category(message: types.Message, state: FSMContext):
     if message.text == "❌ Bekor qilish":
         return await cancel_handler(message, state)
-        
+
     await state.update_data(category=message.text)
     await message.answer("E'lon sarlavhasini kiriting (masalan: <i>Iphone 13 Pro Max holati yaxshi</i>):", parse_mode="HTML", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(AddAdState.title)
@@ -66,10 +67,10 @@ async def process_price(message: types.Message, state: FSMContext):
 async def process_photo(message: types.Message, state: FSMContext):
     photo_id = message.photo[-1].file_id
     await state.update_data(photo_id=photo_id)
-    
+
     builder = ReplyKeyboardBuilder()
     builder.add(types.KeyboardButton(text="📞 Telefon raqamni yuborish", request_contact=True))
-    
+
     await message.answer(
         "Aloqa uchun telefon raqamingizni yuboring (tugmani bosing yoki yozib yuboring):",
         reply_markup=builder.as_markup(resize_keyboard=True, one_time_keyboard=True)
@@ -85,9 +86,9 @@ async def process_photo_invalid(message: types.Message):
 async def process_phone(message: types.Message, state: FSMContext):
     phone = message.contact.phone_number if message.contact else message.text
     await state.update_data(phone=phone)
-    
+
     data = await state.get_data()
-    
+
     text = (
         "<b>📋 E'loningiz quyidagicha ko'rinishda:</b>\n\n"
         f"🏷 <b>Kategoriya:</b> {data['category']}\n"
@@ -97,12 +98,12 @@ async def process_phone(message: types.Message, state: FSMContext):
         f"📞 <b>Tel:</b> {data['phone']}\n\n"
         "Ma'lumotlar to'g'rimi?"
     )
-    
+
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Ha, tasdiqlash", callback_data="confirm_ad")
     builder.button(text="❌ Bekor qilish", callback_data="cancel_ad")
     builder.adjust(2)
-    
+
     await message.answer_photo(
         photo=data['photo_id'],
         caption=text,
@@ -111,37 +112,50 @@ async def process_phone(message: types.Message, state: FSMContext):
     )
     await state.set_state(AddAdState.confirm)
 
-# 8. E'lonni bazaga saqlash (State filtrisiz, to'g'ridan-to'g'ri ishlash uchun)
+# 8. E'lonni bazaga saqlash
 @router.callback_query(F.data == "confirm_ad")
 async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = callback.from_user.id
-    
+
     if not data or 'category' not in data:
         await callback.message.answer("❌ Seans eskirgan yoki e'lon ma'lumotlari topilmadi. Iltimos, qaytadan e'lon bering.")
         await state.clear()
         await callback.answer()
         return
 
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Foydalanuvchini bazaga qo'shish
-    cursor.execute(
-        "INSERT INTO users (user_id, username, full_name, phone) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
-        (user_id, callback.from_user.username, callback.from_user.full_name, data.get('phone', ''))
-    )
-    
-    # E'lonni bazaga faol holatda saqlash
-    cursor.execute(
-        "INSERT INTO ads (user_id, category, title, description, price, photo_id, status) VALUES (%s, %s, %s, %s, %s, %s, 'active');",
-        (user_id, data['category'], data['title'], data['description'], data['price'], data['photo_id'])
-    )
-    
-    conn.commit()
-    cursor.close()
-    conn.close()
-    
+    conn = None
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        # Foydalanuvchini bazaga qo'shish
+        cursor.execute(
+            "INSERT INTO users (user_id, username, full_name, phone) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
+            (user_id, callback.from_user.username, callback.from_user.full_name, data.get('phone', ''))
+        )
+
+        # E'lonni bazaga faol holatda saqlash
+        cursor.execute(
+            "INSERT INTO ads (user_id, category, title, description, price, photo_id, status) VALUES (%s, %s, %s, %s, %s, %s, 'active');",
+            (user_id, data['category'], data['title'], data['description'], data['price'], data['photo_id'])
+        )
+
+        conn.commit()
+        cursor.close()
+    except Exception as e:
+        logging.exception("E'lonni saqlashda xatolik")
+        if conn:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        await callback.answer("❌ Saqlashda xatolik: " + str(e)[:150], show_alert=True)
+        return
+    finally:
+        if conn:
+            conn.close()
+
     # Tasdiqlangach menyuni qaytarish
     builder = ReplyKeyboardBuilder()
     builder.button(text="🔍 E'lon qidirish")

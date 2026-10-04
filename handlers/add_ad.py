@@ -111,22 +111,28 @@ async def process_phone(message: types.Message, state: FSMContext):
     )
     await state.set_state(AddAdState.confirm)
 
-# 8. E'lonni bazaga saqlash va muvaffaqiyatli xabarini chiqarish
-@router.callback_query(AddAdState.confirm, F.data == "confirm_ad")
+# 8. E'lonni bazaga saqlash (State filtrisiz, to'g'ridan-to'g'ri ishlash uchun)
+@router.callback_query(F.data == "confirm_ad")
 async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
     user_id = callback.from_user.id
     
+    if not data or 'category' not in data:
+        await callback.message.answer("❌ Seans eskirgan yoki e'lon ma'lumotlari topilmadi. Iltimos, qaytadan e'lon bering.")
+        await state.clear()
+        await callback.answer()
+        return
+
     conn = get_connection()
     cursor = conn.cursor()
     
     # Foydalanuvchini bazaga qo'shish
     cursor.execute(
         "INSERT INTO users (user_id, username, full_name, phone) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
-        (user_id, callback.from_user.username, callback.from_user.full_name, data['phone'])
+        (user_id, callback.from_user.username, callback.from_user.full_name, data.get('phone', ''))
     )
     
-    # E'lonni saqlash
+    # E'lonni bazaga faol holatda saqlash
     cursor.execute(
         "INSERT INTO ads (user_id, category, title, description, price, photo_id, status) VALUES (%s, %s, %s, %s, %s, %s, 'active');",
         (user_id, data['category'], data['title'], data['description'], data['price'], data['photo_id'])
@@ -136,23 +142,31 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     cursor.close()
     conn.close()
     
-    # Tasdiqlangach muvaffaqiyatli xabarni chiqarish va menyuni qaytarish
+    # Tasdiqlangach menyuni qaytarish
     builder = ReplyKeyboardBuilder()
     builder.button(text="🔍 E'lon qidirish")
     builder.button(text="➕ E'lon berish")
     builder.button(text="👤 Mening e'lonlarim")
     builder.adjust(2, 1)
 
-    await callback.message.edit_caption(
-        caption=f"{callback.message.caption}\n\n<b>✅ E'loningiz muvaffaqiyatli qo'shildi va faollashtirildi!</b>",
-        parse_mode="HTML"
-    )
+    try:
+        await callback.message.edit_caption(
+            caption=f"{callback.message.caption}\n\n<b>✅ E'loningiz muvaffaqiyatli qo'shildi va faollashtirildi!</b>",
+            parse_mode="HTML",
+            reply_markup=None
+        )
+    except Exception:
+        pass
+
     await callback.message.answer("Quyidagi menyudan foydalanishingiz mumkin:", reply_markup=builder.as_markup(resize_keyboard=True))
     await state.clear()
     await callback.answer("Muvaffaqiyatli saqlandi!")
 
-@router.callback_query(AddAdState.confirm, F.data == "cancel_ad")
+@router.callback_query(F.data == "cancel_ad")
 async def cancel_ad_cb(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_caption(caption="❌ E'lon berish bekor qilindi.", reply_markup=None)
-    await callback.answer()
+    try:
+        await callback.message.edit_caption(caption="❌ E'lon berish bekor qilindi.", reply_markup=None)
+    except Exception:
+        pass
+    await callback.answer("Bekor qilindi")

@@ -8,25 +8,30 @@ import threading
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from database import init_db
-from handlers import start, add_ad, search
+from handlers import start, add_ad, search, admin
+from middleware import AccessMiddleware
 
-# Render port talabini qondirish uchun kichik fon veb-serveri
+class OkHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
 def run_dummy_server():
     port = int(os.environ.get("PORT", 10000))
-    handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", port), handler) as httpd:
+    with socketserver.TCPServer(("", port), OkHandler) as httpd:
         logging.info(f"Veb-server {port}-portda ishga tushdi")
         httpd.serve_forever()
 
 async def main():
-    # Logging sozlamalari
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    
-    # Veb-serverni alohida oqimda (thread) ishga tushiramiz
-    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
-    server_thread.start()
+    threading.Thread(target=run_dummy_server, daemon=True).start()
 
-    # Ma'lumotlar bazasini ishga tushirish (jadvallarni yaratish)
     try:
         init_db()
         logging.info("Ma'lumotlar bazasi muvaffaqiyatli ulandi va sozlandi.")
@@ -34,16 +39,17 @@ async def main():
         logging.error(f"Ma'lumotlar bazasiga ulanishda xatolik: {e}")
         return
 
-    # Bot va Dispatcher obyektini yaratish
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # Routerlarni ulash
+    dp.message.outer_middleware(AccessMiddleware())
+    dp.callback_query.outer_middleware(AccessMiddleware())
+
     dp.include_router(start.router)
+    dp.include_router(admin.router)
     dp.include_router(add_ad.router)
     dp.include_router(search.router)
 
-    # Eski xabarlarni o'tkazib yuborish va botni ishga tushirish
     await bot.delete_webhook(drop_pending_updates=True)
     logging.info("Bot ishga tushdi va ulanishni kutmoqda...")
     await dp.start_polling(bot)

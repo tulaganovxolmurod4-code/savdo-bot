@@ -111,7 +111,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     )
     await state.set_state(AddAdState.confirm)
 
-# 8. E'lonni bazaga saqlash
+# 8. E'lonni bazaga saqlash va muvaffaqiyatli xabarini chiqarish
 @router.callback_query(AddAdState.confirm, F.data == "confirm_ad")
 async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
@@ -120,7 +120,7 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Foydalanuvchi bazada borligini tekshirish va qo'shish
+    # Foydalanuvchini bazaga qo'shish
     cursor.execute(
         "INSERT INTO users (user_id, username, full_name, phone) VALUES (%s, %s, %s, %s) ON CONFLICT (user_id) DO NOTHING;",
         (user_id, callback.from_user.username, callback.from_user.full_name, data['phone'])
@@ -136,12 +136,20 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     cursor.close()
     conn.close()
     
+    # Tasdiqlangach muvaffaqiyatli xabarni chiqarish va menyuni qaytarish
+    builder = ReplyKeyboardBuilder()
+    builder.button(text="🔍 E'lon qidirish")
+    builder.button(text="➕ E'lon berish")
+    builder.button(text="👤 Mening e'lonlarim")
+    builder.adjust(2, 1)
+
     await callback.message.edit_caption(
-        caption="✅ E'loningiz muvaffaqiyatli joylandi va faollashtirildi!",
-        reply_markup=None
+        caption=f"{callback.message.caption}\n\n<b>✅ E'loningiz muvaffaqiyatli qo'shildi va faollashtirildi!</b>",
+        parse_mode="HTML"
     )
+    await callback.message.answer("Quyidagi menyudan foydalanishingiz mumkin:", reply_markup=builder.as_markup(resize_keyboard=True))
     await state.clear()
-    await callback.answer()
+    await callback.answer("Muvaffaqiyatli saqlandi!")
 
 @router.callback_query(AddAdState.confirm, F.data == "cancel_ad")
 async def cancel_ad_cb(callback: types.CallbackQuery, state: FSMContext):

@@ -10,10 +10,12 @@ from keyboards import main_menu
 
 router = Router()
 
+
 class Reg(StatesGroup):
     location = State()
     phone = State()
     name = State()
+
 
 def location_kb():
     b = ReplyKeyboardBuilder()
@@ -22,10 +24,12 @@ def location_kb():
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
 
+
 def phone_kb():
     b = ReplyKeyboardBuilder()
     b.add(types.KeyboardButton(text="📞 Telefon raqamni yuborish", request_contact=True))
     return b.as_markup(resize_keyboard=True)
+
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -48,6 +52,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     )
     await state.set_state(Reg.location)
 
+
 @router.message(Reg.location, F.location)
 async def got_location(message: types.Message, state: FSMContext):
     if getattr(message, "forward_origin", None) or getattr(message, "forward_date", None):
@@ -57,6 +62,7 @@ async def got_location(message: types.Message, state: FSMContext):
     await message.answer("📞 Endi telefon raqamingizni yuboring (tugmani bosing):", reply_markup=phone_kb())
     await state.set_state(Reg.phone)
 
+
 @router.message(Reg.location)
 async def location_other(message: types.Message):
     await message.answer(
@@ -64,6 +70,7 @@ async def location_other(message: types.Message):
         "«✅ Ha, joylashuvni yuborish» tugmasini bosing.",
         reply_markup=location_kb(),
     )
+
 
 @router.message(Reg.phone, F.contact)
 async def got_phone(message: types.Message, state: FSMContext):
@@ -75,9 +82,11 @@ async def got_phone(message: types.Message, state: FSMContext):
     await message.answer("👤 Ismingizni kiriting:", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(Reg.name)
 
+
 @router.message(Reg.phone)
 async def phone_other(message: types.Message):
     await message.answer("Iltimos, «📞 Telefon raqamni yuborish» tugmasini bosing.", reply_markup=phone_kb())
+
 
 @router.message(Reg.name, F.text)
 async def got_name(message: types.Message, state: FSMContext):
@@ -110,4 +119,6 @@ async def got_name(message: types.Message, state: FSMContext):
     await message.answer(
         f"✅ Rahmat, <b>{html.escape(name)}</b>! Ro'yxatdan o'tdingiz.\n"
         "Endi botdan to'liq foydalanishingiz mumkin.",
-        reply_m
+        reply_markup=main_menu(message.from_user.id),
+        parse_mode="HTML",
+    )

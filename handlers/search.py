@@ -50,7 +50,7 @@ async def show_ads_by_category(message: types.Message):
     conn.close()
     
     if not ads:
-        await message.answer(f"❌ '{category'}' kategoriyasida hozircha e'lonlar mavjud emas.")
+        await message.answer(f"❌ '{category}' kategoriyasida hozircha e'lonlar mavjud emas.")
         return
     
     await message.answer(f"<b>📌 '{category}' bo'yicha topilgan e'lonlar:</b>", parse_mode="HTML")
@@ -132,3 +132,4 @@ async def my_ads(message: types.Message):
         text += f"🔹 <b>{title}</b> — {price} ({status_emoji})\n"
         
     await message.answer(text, parse_mode="HTML")
+

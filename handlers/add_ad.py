@@ -6,11 +6,30 @@ from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from states import AddAdState
 from database import get_connection, get_user
 from keyboards import main_menu
+from categories import CATEGORIES, CAT_NAMES
 
 router = Router()
 
 STAY_TEXT = "📍 Shu joylashuvda qolaman"
 RETRY_TEXT = "🔄 Qayta kiritaman"
+
+
+def category_kb():
+    b = ReplyKeyboardBuilder()
+    for name in CAT_NAMES:
+        b.button(text=name)
+    b.button(text="❌ Bekor qilish")
+    b.adjust(2, 2, 1, 1)
+    return b.as_markup(resize_keyboard=True)
+
+
+def sub_choice_kb(category):
+    b = ReplyKeyboardBuilder()
+    for name in CATEGORIES.get(category, []):
+        b.button(text=name)
+    b.adjust(2)
+    b.row(types.KeyboardButton(text="❌ Bekor qilish"))
+    return b.as_markup(resize_keyboard=True)
 
 
 def loc_choice_kb():
@@ -32,17 +51,9 @@ def loc_new_kb():
 
 @router.message(F.text == "➕ E'lon berish")
 async def start_add_ad(message: types.Message, state: FSMContext):
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="🚗 Transport")
-    builder.button(text="🏠 Ko'chmas mulk")
-    builder.button(text="📱 Elektronika")
-    builder.button(text="👕 Kiyim-kechak")
-    builder.button(text="🛠 Boshqalar")
-    builder.button(text="❌ Bekor qilish")
-    builder.adjust(2, 2, 1, 1)
     await message.answer(
         "E'lon berish uchun quyidagi kategoriyalardan birini tanlang:",
-        reply_markup=builder.as_markup(resize_keyboard=True),
+        reply_markup=category_kb(),
     )
     await state.set_state(AddAdState.category)
 
@@ -55,7 +66,25 @@ async def cancel_handler(message: types.Message, state: FSMContext):
 
 @router.message(AddAdState.category)
 async def process_category(message: types.Message, state: FSMContext):
+    if message.text not in CATEGORIES:
+        await message.answer("Iltimos, kategoriyani tugmalardan tanlang.", reply_markup=category_kb())
+        return
     await state.update_data(category=message.text)
+    await message.answer(
+        f"{message.text}\nEndi bo'limni tanlang:",
+        reply_markup=sub_choice_kb(message.text),
+    )
+    await state.set_state(AddAdState.subcategory)
+
+
+@router.message(AddAdState.subcategory)
+async def process_subcategory(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    category = data.get("category")
+    if message.text not in CATEGORIES.get(category, []):
+        await message.answer("Iltimos, bo'limni tugmalardan tanlang.", reply_markup=sub_choice_kb(category))
+        return
+    await state.update_data(subcategory=message.text)
     await message.answer(
         "E'lon sarlavhasini kiriting (masalan: <i>Iphone 13 Pro Max holati yaxshi</i>):",
         parse_mode="HTML",
@@ -173,6 +202,7 @@ async def process_photo(message: types.Message, state: FSMContext):
     text = (
         "<b>📋 E'loningiz quyidagicha ko'rinishda:</b>\n\n"
         f"🏷 <b>Kategoriya:</b> {html.escape(data['category'] or '')}\n"
+        f"📂 <b>Bo'lim:</b> {html.escape(data.get('subcategory') or '')}\n"
         f"📌 <b>Sarlavha:</b> {html.escape(data['title'] or '')}\n"
         f"📝 <b>Tavsif:</b> {html.escape(data['description'] or '')}\n"
         f"💰 <b>Narx:</b> {html.escape(data['price'] or '')}\n"
@@ -226,10 +256,10 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
             (user_id, callback.from_user.username, callback.from_user.full_name, data.get("phone", "")),
         )
         cur.execute(
-            "INSERT INTO ads (user_id, category, title, description, price, photo_id, address, latitude, longitude, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active');",
-            (user_id, data["category"], data["title"], data["description"], data["price"],
-             data["photo_id"], data.get("address"), data.get("lat"), data.get("lon")),
+            "INSERT INTO ads (user_id, category, subcategory, title, description, price, photo_id, address, latitude, longitude, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active');",
+            (user_id, data["category"], data.get("subcategory"), data["title"], data["description"],
+             data["price"], data["photo_id"], data.get("address"), data.get("lat"), data.get("lon")),
         )
         conn.commit()
         cur.close()

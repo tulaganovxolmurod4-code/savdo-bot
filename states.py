@@ -3,6 +3,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class AddAdState(StatesGroup):
     category = State()      # Kategoriyani tanlash
+    subcategory = State()   # Ichki bo'limni tanlash
     title = State()         # Sarlavha
     description = State()   # Tavsif
     price = State()         # Narx

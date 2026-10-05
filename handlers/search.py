@@ -92,11 +92,10 @@ def sub_kb(ci):
 async def search_ads_menu(message: types.Message, state: FSMContext):
     await state.clear()
     builder = ReplyKeyboardBuilder()
-    for name in CAT_NAMES:
-        builder.button(text=name)
-    builder.button(text="🔎 So'z bilan qidirish")
-    builder.button(text="🔙 Asosiy menyu")
-    builder.adjust(2, 2, 1, 1, 1)
+    for i in range(0, len(CAT_NAMES), 2):
+        builder.row(*[types.KeyboardButton(text=n) for n in CAT_NAMES[i:i + 2]])
+    builder.row(types.KeyboardButton(text="🔎 So'z bilan qidirish"))
+    builder.row(types.KeyboardButton(text="🔙 Asosiy menyu"))
 
     await message.answer(
         "Qaysi kategoriyadan e'lon qidirmoqchisiz?",

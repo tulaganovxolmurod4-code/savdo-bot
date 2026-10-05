@@ -9,6 +9,8 @@ router = Router()
 router.message.filter(F.from_user.id == ADMIN_ID)
 router.callback_query.filter(F.from_user.id == ADMIN_ID)
 PAGE = 8
+LOC_PAGE = 10
+
 
 def q(sql, params=(), mode="all"):
     conn = get_connection()
@@ -28,6 +30,7 @@ def q(sql, params=(), mode="all"):
         cur.close()
         conn.close()
 
+
 def stats_text():
     u = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE is_registered), COUNT(*) FILTER (WHERE is_banned) FROM users;", mode="one")
     a = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE status='active'), COUNT(*) FILTER (WHERE status='sold') FROM ads;", mode="one")
@@ -39,17 +42,21 @@ def stats_text():
         f"💰 Sotilgan: <b>{a[2]}</b>"
     )
 
+
 def panel_kb():
     b = InlineKeyboardBuilder()
     b.button(text="👥 Foydalanuvchilar", callback_data="adm:users:0")
+    b.button(text="📍 Joylashuvlar", callback_data="adm:locs:0")
     b.button(text="🔄 Yangilash", callback_data="adm:home")
     b.adjust(1)
     return b.as_markup()
+
 
 @router.message(F.text == "🛠 Admin panel")
 @router.message(Command("admin"))
 async def panel(message: types.Message):
     await message.answer(stats_text(), parse_mode="HTML", reply_markup=panel_kb())
+
 
 @router.callback_query(F.data == "adm:home")
 async def home(cb: types.CallbackQuery):
@@ -58,6 +65,7 @@ async def home(cb: types.CallbackQuery):
     except Exception:
         pass
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("adm:users:"))
 async def users_list(cb: types.CallbackQuery):
@@ -93,6 +101,59 @@ async def users_list(cb: types.CallbackQuery):
         await cb.message.answer(text, parse_mode="HTML", reply_markup=b.as_markup())
     await cb.answer()
 
+
+@router.callback_query(F.data.startswith("adm:locs:"))
+async def locations_list(cb: types.CallbackQuery):
+    page = int(cb.data.split(":")[2])
+    rows = q(
+        """SELECT user_id, full_name, username, phone, latitude, longitude, created_at
+           FROM users WHERE is_registered
+           ORDER BY created_at DESC LIMIT %s OFFSET %s;""",
+        (LOC_PAGE + 1, page * LOC_PAGE),
+    )
+    more = len(rows) > LOC_PAGE
+    rows = rows[:LOC_PAGE]
+
+    if not rows:
+        text = "Hali ro'yxatdan o'tgan foydalanuvchi yo'q."
+    else:
+        lines = [f"<b>📍 Joylashuvlar</b> (sahifa {page + 1})\n"]
+        for uid, name, username, phone, lat, lon, created in rows:
+            uname = f"@{html.escape(username)}" if username else "—"
+            if lat is not None and lon is not None:
+                loc = f'<a href="https://www.google.com/maps?q={lat},{lon}">🗺 Xaritada ochish</a>'
+            else:
+                loc = "joylashuv yo'q"
+            lines.append(
+                f"👤 <b>{html.escape(name or '-')}</b> ({uname})\n"
+                f"📞 {html.escape(phone or '—')}\n"
+                f"📍 {loc}\n"
+                f"🕒 {created:%Y-%m-%d %H:%M}\n"
+            )
+        text = "\n".join(lines)
+
+    b = InlineKeyboardBuilder()
+    nav = []
+    if page > 0:
+        nav.append(types.InlineKeyboardButton(text="⬅️", callback_data=f"adm:locs:{page-1}"))
+    nav.append(types.InlineKeyboardButton(text="🏠", callback_data="adm:home"))
+    if more:
+        nav.append(types.InlineKeyboardButton(text="➡️", callback_data=f"adm:locs:{page+1}"))
+    b.row(*nav)
+
+    try:
+        await cb.message.edit_text(
+            text, parse_mode="HTML", reply_markup=b.as_markup(),
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        await cb.message.answer(
+            text, parse_mode="HTML", reply_markup=b.as_markup(),
+            disable_web_page_preview=True,
+        )
+    await cb.answer()
+
+
 def user_kb(uid, banned):
     b = InlineKeyboardBuilder()
     if banned:
@@ -104,6 +165,7 @@ def user_kb(uid, banned):
     b.button(text="⬅️ Ro'yxat", callback_data="adm:users:0")
     b.adjust(2, 1, 1)
     return b.as_markup()
+
 
 @router.callback_query(F.data.startswith("adm:user:"))
 async def user_card(cb: types.CallbackQuery):
@@ -128,6 +190,7 @@ async def user_card(cb: types.CallbackQuery):
         await cb.message.answer_location(lat, lon)
     await cb.answer()
 
+
 @router.callback_query(F.data.startswith("adm:ban:"))
 async def ban(cb: types.CallbackQuery):
     uid = int(cb.data.split(":")[2])
@@ -146,6 +209,7 @@ async def ban(cb: types.CallbackQuery):
         pass
     await cb.answer("🚫 Bloklandi, e'lonlari yashirildi", show_alert=True)
 
+
 @router.callback_query(F.data.startswith("adm:unban:"))
 async def unban(cb: types.CallbackQuery):
     uid = int(cb.data.split(":")[2])
@@ -157,6 +221,7 @@ async def unban(cb: types.CallbackQuery):
         pass
     await cb.answer("✅ Blokdan chiqarildi", show_alert=True)
 
+
 @router.callback_query(F.data.startswith("adm:delads:"))
 async def delads_ask(cb: types.CallbackQuery):
     uid = int(cb.data.split(":")[2])
@@ -167,6 +232,7 @@ async def delads_ask(cb: types.CallbackQuery):
     await cb.message.answer("Shu foydalanuvchining BARCHA e'lonlari o'chiriladi. Ishonchingiz komilmi?", reply_markup=b.as_markup())
     await cb.answer()
 
+
 @router.callback_query(F.data.startswith("adm:delads_yes:"))
 async def delads_yes(cb: types.CallbackQuery):
     uid = int(cb.data.split(":")[2])
@@ -176,6 +242,7 @@ async def delads_yes(cb: types.CallbackQuery):
     except Exception:
         pass
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("adm:ads:"))
 async def user_ads(cb: types.CallbackQuery):
@@ -196,6 +263,7 @@ async def user_ads(cb: types.CallbackQuery):
         else:
             await cb.message.answer(text, parse_mode="HTML", reply_markup=b.as_markup())
     await cb.answer()
+
 
 @router.callback_query(F.data.startswith("adm:delad:"))
 async def del_one(cb: types.CallbackQuery):

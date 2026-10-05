@@ -9,6 +9,26 @@ from keyboards import main_menu
 
 router = Router()
 
+STAY_TEXT = "📍 Shu joylashuvda qolaman"
+RETRY_TEXT = "🔄 Qayta kiritaman"
+
+
+def loc_choice_kb():
+    b = ReplyKeyboardBuilder()
+    b.button(text=STAY_TEXT)
+    b.button(text=RETRY_TEXT)
+    b.button(text="❌ Bekor qilish")
+    b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
+
+
+def loc_new_kb():
+    b = ReplyKeyboardBuilder()
+    b.add(types.KeyboardButton(text="📍 Joylashuvni yuborish", request_location=True))
+    b.add(types.KeyboardButton(text="❌ Bekor qilish"))
+    b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
+
 
 @router.message(F.text == "➕ E'lon berish")
 async def start_add_ad(message: types.Message, state: FSMContext):
@@ -61,8 +81,86 @@ async def process_description(message: types.Message, state: FSMContext):
 @router.message(AddAdState.price)
 async def process_price(message: types.Message, state: FSMContext):
     await state.update_data(price=message.text)
-    await message.answer("Mahsulot rasmini yuboring:")
+    await message.answer(
+        "🏪 Do'koningiz manzilini kiriting\n"
+        "(masalan: <i>Toshkent, Chilonzor, 7-kvartal, 15-do'kon</i>):",
+        parse_mode="HTML",
+    )
+    await state.set_state(AddAdState.address)
+
+
+@router.message(AddAdState.address, F.text)
+async def process_address(message: types.Message, state: FSMContext):
+    address = message.text.strip()
+    if len(address) < 3:
+        await message.answer("Manzil juda qisqa. Iltimos, to'liqroq kiriting:")
+        return
+    await state.update_data(address=address)
+
+    user = get_user(message.from_user.id)
+    lat = (user or {}).get("latitude")
+    lon = (user or {}).get("longitude")
+
+    if lat is not None and lon is not None:
+        await message.answer("📍 Ro'yxatdan o'tganda yuborgan joylashuvingiz:")
+        await message.answer_location(lat, lon)
+        await message.answer(
+            "E'lon shu joylashuv bilan chiqsinmi yoki yangisini kiritasizmi?",
+            reply_markup=loc_choice_kb(),
+        )
+        await state.set_state(AddAdState.loc_choice)
+    else:
+        await message.answer(
+            "📍 Joylashuvingizni yuboring (tugmani bosing):",
+            reply_markup=loc_new_kb(),
+        )
+        await state.set_state(AddAdState.loc_new)
+
+
+@router.message(AddAdState.loc_choice, F.text == STAY_TEXT)
+async def loc_stay(message: types.Message, state: FSMContext):
+    user = get_user(message.from_user.id)
+    lat = (user or {}).get("latitude")
+    lon = (user or {}).get("longitude")
+    if lat is None or lon is None:
+        await message.answer("📍 Joylashuvingizni yuboring (tugmani bosing):", reply_markup=loc_new_kb())
+        await state.set_state(AddAdState.loc_new)
+        return
+    await state.update_data(lat=lat, lon=lon)
+    await message.answer("Mahsulot rasmini yuboring:", reply_markup=types.ReplyKeyboardRemove())
     await state.set_state(AddAdState.photo)
+
+
+@router.message(AddAdState.loc_choice, F.text == RETRY_TEXT)
+async def loc_retry(message: types.Message, state: FSMContext):
+    await message.answer(
+        "📍 Yangi joylashuvingizni yuboring (tugmani bosing):",
+        reply_markup=loc_new_kb(),
+    )
+    await state.set_state(AddAdState.loc_new)
+
+
+@router.message(AddAdState.loc_choice)
+async def loc_choice_other(message: types.Message):
+    await message.answer("Iltimos, tugmalardan birini tanlang.", reply_markup=loc_choice_kb())
+
+
+@router.message(AddAdState.loc_new, F.location)
+async def loc_new_got(message: types.Message, state: FSMContext):
+    if getattr(message, "forward_origin", None) or getattr(message, "forward_date", None):
+        await message.answer("❌ Yo'naltirilgan lokatsiya qabul qilinmaydi. Tugma orqali yuboring.")
+        return
+    await state.update_data(lat=message.location.latitude, lon=message.location.longitude)
+    await message.answer("Mahsulot rasmini yuboring:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(AddAdState.photo)
+
+
+@router.message(AddAdState.loc_new)
+async def loc_new_other(message: types.Message):
+    await message.answer(
+        "Iltimos, «📍 Joylashuvni yuborish» tugmasini bosing.",
+        reply_markup=loc_new_kb(),
+    )
 
 
 @router.message(AddAdState.photo, F.photo)
@@ -78,9 +176,18 @@ async def process_photo(message: types.Message, state: FSMContext):
         f"📌 <b>Sarlavha:</b> {html.escape(data['title'] or '')}\n"
         f"📝 <b>Tavsif:</b> {html.escape(data['description'] or '')}\n"
         f"💰 <b>Narx:</b> {html.escape(data['price'] or '')}\n"
+        f"🏪 <b>Manzil:</b> {html.escape(data.get('address') or '')}\n"
+    )
+    if data.get("lat") is not None and data.get("lon") is not None:
+        text += (
+            '🗺 <a href="https://www.google.com/maps?q=%s,%s">Joylashuvni xaritada ko\'rish</a>\n'
+            % (data["lat"], data["lon"])
+        )
+    text += (
         f"📞 <b>Tel:</b> {html.escape(data['phone'])}\n\n"
         "Ma'lumotlar to'g'rimi?"
     )
+
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Ha, tasdiqlash", callback_data="confirm_ad")
     builder.button(text="❌ Bekor qilish", callback_data="cancel_ad")
@@ -119,8 +226,10 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
             (user_id, callback.from_user.username, callback.from_user.full_name, data.get("phone", "")),
         )
         cur.execute(
-            "INSERT INTO ads (user_id, category, title, description, price, photo_id, status) VALUES (%s, %s, %s, %s, %s, %s, 'active');",
-            (user_id, data["category"], data["title"], data["description"], data["price"], data["photo_id"]),
+            "INSERT INTO ads (user_id, category, title, description, price, photo_id, address, latitude, longitude, status) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'active');",
+            (user_id, data["category"], data["title"], data["description"], data["price"],
+             data["photo_id"], data.get("address"), data.get("lat"), data.get("lon")),
         )
         conn.commit()
         cur.close()
@@ -158,4 +267,3 @@ async def cancel_ad_cb(callback: types.CallbackQuery, state: FSMContext):
         pass
     await callback.message.answer("Asosiy menyu:", reply_markup=main_menu(callback.from_user.id))
     await callback.answer("Bekor qilindi")
-

@@ -16,10 +16,9 @@ RETRY_TEXT = "🔄 Qayta kiritaman"
 
 def category_kb():
     b = ReplyKeyboardBuilder()
-    for name in CAT_NAMES:
-        b.button(text=name)
-    b.button(text="❌ Bekor qilish")
-    b.adjust(2, 2, 1, 1)
+    for i in range(0, len(CAT_NAMES), 2):
+        b.row(*[types.KeyboardButton(text=n) for n in CAT_NAMES[i:i + 2]])
+    b.row(types.KeyboardButton(text="❌ Bekor qilish"))
     return b.as_markup(resize_keyboard=True)
 
 

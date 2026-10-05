@@ -1,9 +1,77 @@
+import threading
 import psycopg2
+from psycopg2 import pool
 from config import DATABASE_URL
+
+_pool = None
+_lock = threading.Lock()
+
+
+def _get_pool():
+    """Ulanishlar pulini birinchi marta kerak bo'lganda yaratadi."""
+    global _pool
+    if _pool is None:
+        with _lock:
+            if _pool is None:
+                _pool = pool.ThreadedConnectionPool(
+                    1, 10, DATABASE_URL,
+                    sslmode='require',
+                    connect_timeout=10,
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                )
+    return _pool
+
+
+class PooledConnection:
+    """psycopg2 ulanishini o'raydi: close() ulanishni yopmaydi, pulga qaytaradi."""
+
+    def __init__(self, conn):
+        self._conn = conn
+        self._released = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        if self._released:
+            return
+        self._released = True
+        p = _get_pool()
+        try:
+            if self._conn.closed:
+                p.putconn(self._conn, close=True)
+            else:
+                self._conn.rollback()
+                p.putconn(self._conn)
+        except Exception:
+            try:
+                p.putconn(self._conn, close=True)
+            except Exception:
+                pass
 
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL, sslmode='require')
+    """Puldan tayyor ulanish beradi. O'lik ulanish chiqsa, yangisini oladi."""
+    p = _get_pool()
+    for _ in range(3):
+        conn = p.getconn()
+        try:
+            if conn.closed:
+                raise psycopg2.OperationalError("closed")
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.close()
+            conn.rollback()
+            return PooledConnection(conn)
+        except Exception:
+            try:
+                p.putconn(conn, close=True)
+            except Exception:
+                pass
+    raise psycopg2.OperationalError("Bazaga ulanib bo'lmadi")
 
 
 def init_db():
@@ -49,6 +117,21 @@ def init_db():
     ]:
         cur.execute(sql)
     conn.commit()
+
+    # Indekslar: qidiruv va admin ro'yxatlarini tezlashtiradi.
+    # Har biri alohida: biri xato bersa ham bot ishga tushaveradi.
+    for sql in [
+        "CREATE INDEX IF NOT EXISTS idx_ads_cat_status ON ads (category, status, id DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_ads_user ON ads (user_id);",
+        "CREATE INDEX IF NOT EXISTS idx_ads_status ON ads (status);",
+        "CREATE INDEX IF NOT EXISTS idx_users_reg ON users (is_registered, created_at DESC);",
+    ]:
+        try:
+            cur.execute(sql)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
     cur.close()
     conn.close()
 

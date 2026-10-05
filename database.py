@@ -114,6 +114,7 @@ def init_db():
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS address TEXT;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;",
+        "ALTER TABLE ads ADD COLUMN IF NOT EXISTS subcategory TEXT;",
     ]:
         cur.execute(sql)
     conn.commit()
@@ -122,6 +123,7 @@ def init_db():
     # Har biri alohida: biri xato bersa ham bot ishga tushaveradi.
     for sql in [
         "CREATE INDEX IF NOT EXISTS idx_ads_cat_status ON ads (category, status, id DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_ads_cat_sub ON ads (category, subcategory, status, id DESC);",
         "CREATE INDEX IF NOT EXISTS idx_ads_user ON ads (user_id);",
         "CREATE INDEX IF NOT EXISTS idx_ads_status ON ads (status);",
         "CREATE INDEX IF NOT EXISTS idx_users_reg ON users (is_registered, created_at DESC);",

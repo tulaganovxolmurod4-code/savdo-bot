@@ -27,6 +27,13 @@ CATEGORIES = {
         "Poyabzal",
         "Aksessuarlar",
     ],
+    "💄 Parfyumeriya": [
+        "Atirlar",
+        "Kosmetika",
+        "Teri parvarishi",
+        "Soch parvarishi",
+        "Boshqa",
+    ],
     "🛠 Boshqalar": [
         "Xizmatlar",
         "Oziq-ovqat",

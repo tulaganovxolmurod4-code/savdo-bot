@@ -1,17 +1,95 @@
+import asyncio
 import html
 import logging
+import time
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from states import AddAdState
 from database import get_connection, get_user
-from keyboards import main_menu
+from keyboards import main_menu, ADMIN_ID
 from categories import CATEGORIES, CAT_NAMES
+from filters import check_text, REJECT_TEXT
+from moderation_ai import ai_flagged
 
 router = Router()
 
 STAY_TEXT = "📍 Shu joylashuvda qolaman"
 RETRY_TEXT = "🔄 Qayta kiritaman"
+
+DAILY_LIMIT = 5  # 24 soat ichida eng ko'pi bilan nechta e'lon
+
+
+def ads_in_last_24h(user_id):
+    """(nechta e'lon, limit ochilishiga necha soniya qolgan) qaytaradi."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT COUNT(*), "
+            "EXTRACT(EPOCH FROM (MIN(created_at) + INTERVAL '24 hours' - NOW())) "
+            "FROM ads WHERE user_id = %s AND created_at > NOW() - INTERVAL '24 hours';",
+            (user_id,),
+        )
+        count, wait = cur.fetchone()
+        return int(count or 0), max(int(wait or 0), 0)
+    finally:
+        cur.close()
+        conn.close()
+
+
+def limit_text(wait_seconds):
+    hours, rest = divmod(wait_seconds, 3600)
+    minutes = rest // 60
+    return (
+        f"❌ 24 soat ichida {DAILY_LIMIT} tadan ortiq e'lon berib bo'lmaydi.\n"
+        f"Yangi e'lonni taxminan {hours} soat {minutes} daqiqadan keyin bera olasiz."
+    )
+
+
+_last_alert = {}  # user_id -> oxirgi ogohlantirish vaqti (adminni spamdan saqlaydi)
+
+
+async def notify_admin(message, reason, text):
+    """Taqiqlangan e'lon yozishga urinish bo'lsa, adminga xabar beradi (daqiqada bir marta)."""
+    if not ADMIN_ID:
+        return
+    user = message.from_user
+    now = time.monotonic()
+    last = _last_alert.get(user.id)
+    if last is not None and now - last < 60:
+        return
+    _last_alert[user.id] = now
+    try:
+        await message.bot.send_message(
+            ADMIN_ID,
+            f"⚠️ Taqiqlangan e'lon urinishi ({reason})\n"
+            f"👤 {html.escape(user.full_name)} (ID: <code>{user.id}</code>)\n\n"
+            f"{html.escape(text[:300])}",
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
+
+async def validate_text(message, max_len, use_ai=False):
+    """Matnni tekshiradi. To'g'ri bo'lsa matnni qaytaradi, aks holda xabar yuborib None qaytaradi."""
+    text = (message.text or "").strip()
+    if not text:
+        await message.answer("Iltimos, matn yuboring.")
+        return None
+    reason = check_text(text)
+    if not reason and use_ai and await ai_flagged(text):
+        reason = "ai"
+    if reason:
+        await message.answer(REJECT_TEXT[reason])
+        if reason not in ("link", "profanity"):
+            await notify_admin(message, reason, text)
+        return None
+    if len(text) > max_len:
+        await message.answer(f"Matn juda uzun. {max_len} belgidan oshmasin.")
+        return None
+    return text
 
 
 def category_kb():
@@ -50,6 +128,12 @@ def loc_new_kb():
 
 @router.message(F.text == "➕ E'lon berish")
 async def start_add_ad(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        count, wait = await asyncio.to_thread(ads_in_last_24h, message.from_user.id)
+        if count >= DAILY_LIMIT:
+            await state.clear()
+            await message.answer(limit_text(wait), reply_markup=main_menu(message.from_user.id))
+            return
     await message.answer(
         "E'lon berish uchun quyidagi kategoriyalardan birini tanlang:",
         reply_markup=category_kb(),
@@ -94,21 +178,30 @@ async def process_subcategory(message: types.Message, state: FSMContext):
 
 @router.message(AddAdState.title)
 async def process_title(message: types.Message, state: FSMContext):
-    await state.update_data(title=message.text)
+    title = await validate_text(message, 100, use_ai=True)
+    if title is None:
+        return
+    await state.update_data(title=title)
     await message.answer("Mahsulot yoki xizmat haqida batafsil ma'lumot (tavsif) kiriting:")
     await state.set_state(AddAdState.description)
 
 
 @router.message(AddAdState.description)
 async def process_description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
+    description = await validate_text(message, 500, use_ai=True)
+    if description is None:
+        return
+    await state.update_data(description=description)
     await message.answer("Narxini kiriting (masalan: <i>500$ yoki 3000000 so'm</i>):", parse_mode="HTML")
     await state.set_state(AddAdState.price)
 
 
 @router.message(AddAdState.price)
 async def process_price(message: types.Message, state: FSMContext):
-    await state.update_data(price=message.text)
+    price = await validate_text(message, 40)
+    if price is None:
+        return
+    await state.update_data(price=price)
     await message.answer(
         "🏪 Do'koningiz manzilini kiriting\n"
         "(masalan: <i>Toshkent, Chilonzor, 7-kvartal, 15-do'kon</i>):",
@@ -119,7 +212,9 @@ async def process_price(message: types.Message, state: FSMContext):
 
 @router.message(AddAdState.address, F.text)
 async def process_address(message: types.Message, state: FSMContext):
-    address = message.text.strip()
+    address = await validate_text(message, 120)
+    if address is None:
+        return
     if len(address) < 3:
         await message.answer("Manzil juda qisqa. Iltimos, to'liqroq kiriting:")
         return
@@ -245,6 +340,14 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
         await callback.answer()
         return
+
+    if user_id != ADMIN_ID:
+        count, wait = await asyncio.to_thread(ads_in_last_24h, user_id)
+        if count >= DAILY_LIMIT:
+            await state.clear()
+            await callback.message.answer(limit_text(wait), reply_markup=main_menu(user_id))
+            await callback.answer("Limit tugagan", show_alert=True)
+            return
 
     conn = None
     try:

@@ -7,6 +7,7 @@ class AddAdState(StatesGroup):
     title = State()         # Sarlavha
     description = State()   # Tavsif
     price = State()         # Narx
+    addr_choice = State()   # Manzil va joylashuvni ko'rsatish yoki ko'rsatmaslik
     address = State()       # Do'kon manzili (matn)
     loc_choice = State()    # Eski joylashuvda qolish yoki qayta kiritish
     loc_new = State()       # Yangi joylashuv yuborish

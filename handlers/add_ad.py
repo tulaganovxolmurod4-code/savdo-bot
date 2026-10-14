@@ -16,6 +16,9 @@ router = Router()
 
 STAY_TEXT = "📍 Shu joylashuvda qolaman"
 RETRY_TEXT = "🔄 Qayta kiritaman"
+SKIP_LOC_TEXT = "⏭ Joylashuvsiz (faqat manzil)"
+SHOW_TEXT = "✅ Ha, ko'rsataman"
+NOSHOW_TEXT = "⏭ Ko'rsatmayman"
 
 DAILY_LIMIT = 5  # 24 soat ichida eng ko'pi bilan nechta e'lon
 
@@ -109,10 +112,26 @@ def sub_choice_kb(category):
     return b.as_markup(resize_keyboard=True)
 
 
+def addr_choice_kb():
+    b = ReplyKeyboardBuilder()
+    b.button(text=SHOW_TEXT)
+    b.button(text=NOSHOW_TEXT)
+    b.button(text="❌ Bekor qilish")
+    b.adjust(1)
+    return b.as_markup(resize_keyboard=True)
+
+
+def cancel_only_kb():
+    b = ReplyKeyboardBuilder()
+    b.button(text="❌ Bekor qilish")
+    return b.as_markup(resize_keyboard=True)
+
+
 def loc_choice_kb():
     b = ReplyKeyboardBuilder()
     b.button(text=STAY_TEXT)
     b.button(text=RETRY_TEXT)
+    b.button(text=SKIP_LOC_TEXT)
     b.button(text="❌ Bekor qilish")
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
@@ -121,9 +140,16 @@ def loc_choice_kb():
 def loc_new_kb():
     b = ReplyKeyboardBuilder()
     b.add(types.KeyboardButton(text="📍 Joylashuvni yuborish", request_location=True))
+    b.add(types.KeyboardButton(text=SKIP_LOC_TEXT))
     b.add(types.KeyboardButton(text="❌ Bekor qilish"))
     b.adjust(1)
     return b.as_markup(resize_keyboard=True)
+
+
+LOC_WARNING = (
+    "⚠️ Joylashuv e'londa hamma uchun xaritada ko'rinadi. "
+    "Uyingizdan emas, do'kon yoki uchrashuv joyidan yuboring."
+)
 
 
 @router.message(F.text == "➕ E'lon berish")
@@ -203,11 +229,35 @@ async def process_price(message: types.Message, state: FSMContext):
         return
     await state.update_data(price=price)
     await message.answer(
-        "🏪 Do'koningiz manzilini kiriting\n"
+        "📍 Manzil va joylashuvni ko'rsatasizmi?\n\n"
+        "Do'koningiz yoki uchrashuv joyingiz bo'lsa, mijozlar uni e'londa xaritada ko'radi. "
+        "Bu majburiy emas: bitta narsa sotayotgan bo'lsangiz, «Ko'rsatmayman» ni tanlang.",
+        reply_markup=addr_choice_kb(),
+    )
+    await state.set_state(AddAdState.addr_choice)
+
+
+@router.message(AddAdState.addr_choice, F.text == SHOW_TEXT)
+async def addr_show(message: types.Message, state: FSMContext):
+    await message.answer(
+        "🏪 Manzilni kiriting\n"
         "(masalan: <i>Toshkent, Chilonzor, 7-kvartal, 15-do'kon</i>):",
         parse_mode="HTML",
+        reply_markup=cancel_only_kb(),
     )
     await state.set_state(AddAdState.address)
+
+
+@router.message(AddAdState.addr_choice, F.text == NOSHOW_TEXT)
+async def addr_skip(message: types.Message, state: FSMContext):
+    await state.update_data(address=None, lat=None, lon=None)
+    await message.answer("Mahsulot rasmini yuboring:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(AddAdState.photo)
+
+
+@router.message(AddAdState.addr_choice)
+async def addr_choice_other(message: types.Message):
+    await message.answer("Iltimos, tugmalardan birini tanlang.", reply_markup=addr_choice_kb())
 
 
 @router.message(AddAdState.address, F.text)
@@ -228,13 +278,14 @@ async def process_address(message: types.Message, state: FSMContext):
         await message.answer("📍 Ro'yxatdan o'tganda yuborgan joylashuvingiz:")
         await message.answer_location(lat, lon)
         await message.answer(
-            "E'lon shu joylashuv bilan chiqsinmi yoki yangisini kiritasizmi?",
+            "E'lon shu joylashuv bilan chiqsinmi, yangisini kiritasizmi yoki joylashuvsiz (faqat manzil)?\n\n"
+            + LOC_WARNING,
             reply_markup=loc_choice_kb(),
         )
         await state.set_state(AddAdState.loc_choice)
     else:
         await message.answer(
-            "📍 Joylashuvingizni yuboring (tugmani bosing):",
+            "📍 Joylashuvingizni yuboring (tugmani bosing) yoki joylashuvsiz davom eting.\n\n" + LOC_WARNING,
             reply_markup=loc_new_kb(),
         )
         await state.set_state(AddAdState.loc_new)
@@ -261,6 +312,14 @@ async def loc_retry(message: types.Message, state: FSMContext):
         reply_markup=loc_new_kb(),
     )
     await state.set_state(AddAdState.loc_new)
+
+
+@router.message(AddAdState.loc_choice, F.text == SKIP_LOC_TEXT)
+@router.message(AddAdState.loc_new, F.text == SKIP_LOC_TEXT)
+async def loc_skip(message: types.Message, state: FSMContext):
+    await state.update_data(lat=None, lon=None)
+    await message.answer("Mahsulot rasmini yuboring:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(AddAdState.photo)
 
 
 @router.message(AddAdState.loc_choice)
@@ -300,8 +359,9 @@ async def process_photo(message: types.Message, state: FSMContext):
         f"📌 <b>Sarlavha:</b> {html.escape(data['title'] or '')}\n"
         f"📝 <b>Tavsif:</b> {html.escape(data['description'] or '')}\n"
         f"💰 <b>Narx:</b> {html.escape(data['price'] or '')}\n"
-        f"🏪 <b>Manzil:</b> {html.escape(data.get('address') or '')}\n"
     )
+    if data.get("address"):
+        text += f"🏪 <b>Manzil:</b> {html.escape(data['address'])}\n"
     if data.get("lat") is not None and data.get("lon") is not None:
         text += (
             '🗺 <a href="https://www.google.com/maps?q=%s,%s">Joylashuvni xaritada ko\'rish</a>\n'

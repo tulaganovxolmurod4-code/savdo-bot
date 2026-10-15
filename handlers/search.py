@@ -42,6 +42,8 @@ async def send_ads(message: types.Message, ads):
 
         builder = InlineKeyboardBuilder()
         builder.button(text="📞 Sotuvchi bilan bog'lanish", callback_data=f"contact_{user_id}")
+        builder.button(text="🚩 Shikoyat", callback_data=f"rep:{ad_id}")
+        builder.adjust(1)
 
         if photo_id:
             await message.answer_photo(

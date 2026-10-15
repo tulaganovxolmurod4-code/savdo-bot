@@ -99,6 +99,27 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
+    # Yordamchi adminlar (bosh admin Render'dagi ADMIN_ID orqali belgilanadi)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS admins (
+            user_id BIGINT PRIMARY KEY,
+            added_by BIGINT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    # Shikoyatlar. ad_id ataylab bog'lanmagan: e'lon o'chirilsa ham shikoyat saqlanib qoladi.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS reports (
+            id SERIAL PRIMARY KEY,
+            ad_id BIGINT NOT NULL,
+            seller_id BIGINT NOT NULL,
+            reporter_id BIGINT NOT NULL,
+            reason TEXT,
+            resolved BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (ad_id, reporter_id)
+        );
+    """)
     # Eski jadvallarni yangilash
     for sql in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;",
@@ -107,6 +128,8 @@ def init_db():
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_registered BOOLEAN DEFAULT FALSE;",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_until TIMESTAMP;",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS photo_id TEXT;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
@@ -127,6 +150,8 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_ads_user ON ads (user_id);",
         "CREATE INDEX IF NOT EXISTS idx_ads_status ON ads (status);",
         "CREATE INDEX IF NOT EXISTS idx_users_reg ON users (is_registered, created_at DESC);",
+        "CREATE INDEX IF NOT EXISTS idx_reports_seller ON reports (seller_id, resolved);",
+        "CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id, created_at);",
     ]:
         try:
             cur.execute(sql)
@@ -142,7 +167,9 @@ def get_user(user_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
-        "SELECT user_id, full_name, username, phone, is_registered, is_banned, latitude, longitude "
+        "SELECT user_id, full_name, username, phone, is_registered, is_banned, latitude, longitude, "
+        "ban_until, ban_reason, "
+        "(COALESCE(is_banned, FALSE) AND (ban_until IS NULL OR ban_until > NOW())) AS ban_active "
         "FROM users WHERE user_id = %s;",
         (user_id,),
     )
@@ -151,5 +178,29 @@ def get_user(user_id):
     conn.close()
     if not row:
         return None
-    keys = ["user_id", "full_name", "username", "phone", "is_registered", "is_banned", "latitude", "longitude"]
+    keys = [
+        "user_id", "full_name", "username", "phone", "is_registered", "is_banned",
+        "latitude", "longitude", "ban_until", "ban_reason", "ban_active",
+    ]
     return dict(zip(keys, row))
+
+
+def release_expired_bans():
+    """Muddati tugagan bloklarni olib tashlaydi va o'sha sotuvchilarning eski shikoyatlarini yopadi."""
+    conn = get_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            WITH released AS (
+                UPDATE users
+                SET is_banned = FALSE, ban_until = NULL, ban_reason = NULL
+                WHERE is_banned AND ban_until IS NOT NULL AND ban_until <= NOW()
+                RETURNING user_id
+            )
+            UPDATE reports SET resolved = TRUE
+            WHERE resolved = FALSE AND seller_id IN (SELECT user_id FROM released);
+        """)
+        conn.commit()
+    finally:
+        cur.close()
+        conn.close()

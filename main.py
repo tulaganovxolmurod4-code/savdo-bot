@@ -9,7 +9,8 @@ from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
 from database import init_db, release_expired_bans
 from admins import load_helpers
-from handlers import start, add_ad, search, admin, complaints
+from handlers import start, add_ad, search, admin, complaints, top
+from image_check import enabled as image_check_enabled
 from middleware import AccessMiddleware
 
 
@@ -56,6 +57,9 @@ async def main():
         logging.error(f"Ma'lumotlar bazasiga ulanishda xatolik: {e}")
         return
 
+    if not image_check_enabled():
+        logging.warning("Rasm tekshiruvi o'chiq: GROQ_API_KEY va GROQ_VISION_MODEL kerak.")
+
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
@@ -65,6 +69,7 @@ async def main():
     dp.include_router(start.router)
     dp.include_router(admin.router)
     dp.include_router(add_ad.router)
+    dp.include_router(top.router)
     dp.include_router(complaints.router)
     dp.include_router(search.router)
 

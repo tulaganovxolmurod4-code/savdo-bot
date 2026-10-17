@@ -11,6 +11,9 @@ from keyboards import main_menu, ADMIN_ID
 from categories import CATEGORIES, CAT_NAMES
 from filters import check_text, REJECT_TEXT
 from moderation_ai import ai_flagged
+from image_check import check_photo
+from admins import notify_ids
+from settings import IMAGE_MAX_ATTEMPTS
 
 router = Router()
 
@@ -93,6 +96,45 @@ async def validate_text(message, max_len, use_ai=False):
         await message.answer(f"Matn juda uzun. {max_len} belgidan oshmasin.")
         return None
     return text
+
+
+async def notify_banned_photo(message, photo_id, seen):
+    """Taqiqlangan mazmunli rasm yuklashga urinish: adminlarga rasm bilan xabar (daqiqada bir marta)."""
+    user = message.from_user
+    now = time.monotonic()
+    last = _last_alert.get(user.id)
+    if last is not None and now - last < 60:
+        return
+    _last_alert[user.id] = now
+    text = (
+        "⚠️ Taqiqlangan mazmunli rasm yuklashga urinish\n"
+        f"👤 {html.escape(user.full_name)} (ID: <code>{user.id}</code>)\n"
+        f"Rasmda: {html.escape(seen or '-')}"
+    )
+    for admin_id in notify_ids():
+        try:
+            await message.bot.send_photo(admin_id, photo_id, caption=text, parse_mode="HTML")
+        except Exception:
+            pass
+
+
+async def notify_flagged_photo(bot, ad_id, user, title, sub, seen, photo_id):
+    """Bo'limga mos kelmagan, lekin urinishlardan keyin qabul qilingan rasm: adminlar ko'rib chiqadi."""
+    text = (
+        "⚠️ <b>Rasm tekshiruvdan o'tmadi</b> (qo'lda ko'ring)\n"
+        f"📦 E'lon: <b>{html.escape(title or '')}</b> ({html.escape(sub or '')})\n"
+        f"🖼 Rasmda: {html.escape(seen or '-')}\n"
+        f"👤 {html.escape(user.full_name)} (ID: <code>{user.id}</code>)"
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 E'lonni o'chirish", callback_data=f"adm:rdel:{ad_id}")
+    kb.button(text="✅ Rasm to'g'ri", callback_data=f"adm:imgok:{ad_id}")
+    kb.adjust(1)
+    for admin_id in notify_ids():
+        try:
+            await bot.send_photo(admin_id, photo_id, caption=text, parse_mode="HTML", reply_markup=kb.as_markup())
+        except Exception:
+            pass
 
 
 def category_kb():
@@ -347,7 +389,41 @@ async def loc_new_other(message: types.Message):
 
 @router.message(AddAdState.photo, F.photo)
 async def process_photo(message: types.Message, state: FSMContext):
-    await state.update_data(photo_id=message.photo[-1].file_id)
+    data = await state.get_data()
+    # Tekshiruv uchun o'rtacha o'lchamdagi rasm olinadi (tezroq va arzonroq)
+    sized = message.photo[-2] if len(message.photo) > 1 else message.photo[-1]
+    await message.bot.send_chat_action(message.chat.id, "typing")
+    result = await check_photo(
+        message.bot, sized, data.get("category"), data.get("subcategory"), data.get("title")
+    )
+    verdict, seen = result["verdict"], result["seen"]
+
+    flagged = False
+    if verdict == "banned":
+        await message.answer(
+            "❌ Rasmda taqiqlangan mazmun aniqlandi. Bunday rasm bilan e'lon berib bo'lmaydi.\n"
+            "Mahsulotingizning o'z rasmini yuboring."
+        )
+        await notify_banned_photo(message, message.photo[-1].file_id, seen)
+        return
+    if verdict == "mismatch":
+        fails = int(data.get("img_fails") or 0) + 1
+        if fails < IMAGE_MAX_ATTEMPTS:
+            await state.update_data(img_fails=fails)
+            await message.answer(
+                f"❌ Bu rasm «{data.get('subcategory')}» bo'limiga mos kelmadi.\n"
+                f"Rasmda: {seen or '-'}\n\n"
+                "Iltimos, sotayotgan mahsulotingizning o'zini suratga olib yuboring. "
+                f"(Urinish {fails}/{IMAGE_MAX_ATTEMPTS})"
+            )
+            return
+        # Oxirgi urinish: rasm qabul qilinadi, lekin adminlar ko'rib chiqadi
+        flagged = True
+        await message.answer("ℹ️ Rasm admin tomonidan qo'shimcha tekshiriladi.")
+
+    await state.update_data(
+        photo_id=message.photo[-1].file_id, photo_flag=flagged, photo_seen=seen, img_fails=0
+    )
     user = get_user(message.from_user.id)
     await state.update_data(phone=(user or {}).get("phone") or "")
     data = await state.get_data()
@@ -409,6 +485,7 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Limit tugagan", show_alert=True)
             return
 
+    new_ad_id = None
     conn = None
     try:
         conn = get_connection()
@@ -419,10 +496,11 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
         )
         cur.execute(
             "INSERT INTO ads (user_id, category, subcategory, title, description, price, photo_id, address, latitude, longitude, status) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active');",
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active') RETURNING id;",
             (user_id, data["category"], data.get("subcategory"), data["title"], data["description"],
              data["price"], data["photo_id"], data.get("address"), data.get("lat"), data.get("lon")),
         )
+        new_ad_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
     except Exception as e:
@@ -446,6 +524,11 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await callback.message.answer("Quyidagi menyudan foydalanishingiz mumkin:", reply_markup=main_menu(user_id))
+    if data.get("photo_flag") and new_ad_id:
+        await notify_flagged_photo(
+            callback.bot, new_ad_id, callback.from_user, data.get("title"),
+            data.get("subcategory"), data.get("photo_seen"), data["photo_id"],
+        )
     await state.clear()
     await callback.answer("Muvaffaqiyatli saqlandi!")
 

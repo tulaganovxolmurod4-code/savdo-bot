@@ -120,6 +120,21 @@ def init_db():
             UNIQUE (ad_id, reporter_id)
         );
     """)
+    # TOP e'lon uchun to'lov cheklari
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS top_requests (
+            id SERIAL PRIMARY KEY,
+            ad_id BIGINT NOT NULL,
+            user_id BIGINT NOT NULL,
+            days INT NOT NULL,
+            price INT NOT NULL,
+            receipt_file_id TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            decided_by BIGINT,
+            decided_at TIMESTAMP
+        );
+    """)
     # Eski jadvallarni yangilash
     for sql in [
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;",
@@ -138,6 +153,7 @@ def init_db():
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;",
         "ALTER TABLE ads ADD COLUMN IF NOT EXISTS subcategory TEXT;",
+        "ALTER TABLE ads ADD COLUMN IF NOT EXISTS top_until TIMESTAMP;",
     ]:
         cur.execute(sql)
     conn.commit()
@@ -152,6 +168,7 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_users_reg ON users (is_registered, created_at DESC);",
         "CREATE INDEX IF NOT EXISTS idx_reports_seller ON reports (seller_id, resolved);",
         "CREATE INDEX IF NOT EXISTS idx_reports_reporter ON reports (reporter_id, created_at);",
+        "CREATE INDEX IF NOT EXISTS idx_top_requests_status ON top_requests (status, id);",
     ]:
         try:
             cur.execute(sql)

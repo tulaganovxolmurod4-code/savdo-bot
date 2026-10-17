@@ -11,15 +11,17 @@ router = Router()
 
 PAGE = 5  # bir safarda nechta e'lon ko'rsatiladi
 
-AD_COLUMNS = "id, title, description, price, photo_id, user_id, address, latitude, longitude, subcategory"
+AD_COLUMNS = ("id, title, description, price, photo_id, user_id, address, latitude, longitude, subcategory, "
+              "(top_until IS NOT NULL AND top_until > NOW())")
 
 
 class SearchState(StatesGroup):
     query = State()
 
 
-def ad_text(title, description, price, address, lat, lon, sub):
-    text = (
+def ad_text(title, description, price, address, lat, lon, sub, is_top=False):
+    text = "🔥 <b>TOP e'lon</b>\n" if is_top else ""
+    text += (
         f"🏷 <b>{html.escape(title or '')}</b>\n\n"
         f"📝 {html.escape(description or '')}\n"
         f"💰 <b>Narxi:</b> {html.escape(price or '')}\n"
@@ -37,8 +39,8 @@ def ad_text(title, description, price, address, lat, lon, sub):
 
 
 async def send_ads(message: types.Message, ads):
-    for ad_id, title, description, price, photo_id, user_id, address, lat, lon, sub in ads:
-        text = ad_text(title, description, price, address, lat, lon, sub)
+    for ad_id, title, description, price, photo_id, user_id, address, lat, lon, sub, is_top in ads:
+        text = ad_text(title, description, price, address, lat, lon, sub, is_top)
 
         builder = InlineKeyboardBuilder()
         builder.button(text="📞 Sotuvchi bilan bog'lanish", callback_data=f"contact_{user_id}")
@@ -69,7 +71,7 @@ def fetch_ads(extra_sql, params, offset):
     cursor = conn.cursor()
     cursor.execute(
         f"SELECT {AD_COLUMNS} FROM ads WHERE status = 'active'{extra_sql} "
-        "ORDER BY id DESC LIMIT %s OFFSET %s;",
+        "ORDER BY (top_until IS NOT NULL AND top_until > NOW()) DESC, id DESC LIMIT %s OFFSET %s;",
         list(params) + [PAGE + 1, offset],
     )
     rows = cursor.fetchall()
@@ -202,7 +204,8 @@ async def my_ads(message: types.Message, state: FSMContext):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, title, price, status FROM ads WHERE user_id = %s ORDER BY id DESC LIMIT 20;",
+        "SELECT id, title, price, status, top_until, (top_until IS NOT NULL AND top_until > NOW()) "
+        "FROM ads WHERE user_id = %s ORDER BY id DESC LIMIT 20;",
         (message.from_user.id,),
     )
     ads = cursor.fetchall()
@@ -214,14 +217,16 @@ async def my_ads(message: types.Message, state: FSMContext):
         return
 
     labels = {"active": "✅ Faol", "sold": "💰 Sotilgan", "blocked": "🚫 Bloklangan", "pending": "⏳ Kutilmoqda"}
-    for ad_id, title, price, status in ads:
+    for ad_id, title, price, status, top_until, is_top in ads:
         b = InlineKeyboardBuilder()
         if status == "active":
+            b.button(text="🔥 TOP qilish" if not is_top else "🔥 TOP'ni uzaytirish", callback_data=f"top:{ad_id}")
             b.button(text="✅ Sotildi", callback_data=f"sold_{ad_id}")
         b.button(text="🗑 O'chirish", callback_data=f"del_{ad_id}")
-        b.adjust(2)
+        b.adjust(1, 2) if status == "active" else b.adjust(1)
+        top_line = f"\n🔥 TOP: {top_until:%d.%m.%Y} gacha" if is_top else ""
         await message.answer(
-            f"🔹 <b>{html.escape(title or '')}</b> — {html.escape(price or '')}\n{labels.get(status, status)}",
+            f"🔹 <b>{html.escape(title or '')}</b> — {html.escape(price or '')}\n{labels.get(status, status)}{top_line}",
             parse_mode="HTML", reply_markup=b.as_markup(),
         )
 

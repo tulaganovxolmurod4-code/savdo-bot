@@ -7,7 +7,8 @@ from admins import add_helper, helper_ids, is_admin, is_super, remove_helper
 from database import get_connection
 from keyboards import main_menu
 from middleware import forget_user
-from settings import HELPERS_SEE_PRIVATE
+from settings import HELPERS_SEE_PRIVATE, ADMIN_CONTACT, money
+from handlers.top import request_text, request_kb
 
 
 class IsAdmin(BaseFilter):
@@ -84,13 +85,19 @@ def stats_text():
     u = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE is_registered), COUNT(*) FILTER (WHERE is_banned) FROM users;", mode="one")
     a = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE status='active'), COUNT(*) FILTER (WHERE status='sold') FROM ads;", mode="one")
     r = q("SELECT COUNT(DISTINCT seller_id) FROM reports WHERE resolved = FALSE;", mode="one")
+    t = q(
+        "SELECT (SELECT COUNT(*) FROM top_requests WHERE status = 'pending'), "
+        "(SELECT COUNT(*) FROM ads WHERE top_until IS NOT NULL AND top_until > NOW());",
+        mode="one",
+    )
     return (
         "<b>🛠 Admin panel</b>\n\n"
         f"👥 Ro'yxatdan o'tganlar: <b>{u[1]}</b> (bloklangan: {u[2]})\n"
         f"📋 Jami e'lonlar: <b>{a[0]}</b>\n"
         f"✅ Faol: <b>{a[1]}</b>\n"
         f"💰 Sotilgan: <b>{a[2]}</b>\n"
-        f"🚩 Shikoyat tushgan sotuvchilar: <b>{r[0]}</b>"
+        f"🚩 Shikoyat tushgan sotuvchilar: <b>{r[0]}</b>\n"
+        f"🔥 TOP: kutayotgan cheklar <b>{t[0]}</b>, faol TOP e'lonlar <b>{t[1]}</b>"
     )
 
 
@@ -99,6 +106,7 @@ def panel_kb(viewer_id):
     b.button(text="👥 Foydalanuvchilar", callback_data="adm:users:0")
     b.button(text="⚫ Qora ro'yxat", callback_data="adm:black:0")
     b.button(text="🚩 Shikoyatlar", callback_data="adm:reps:0")
+    b.button(text="🔥 TOP bo'limi", callback_data="adm:top:0")
     b.button(text="🔎 Qidirish", callback_data="adm:find")
     if is_super(viewer_id):
         b.button(text="📍 Joylashuvlar", callback_data="adm:locs:0")
@@ -467,6 +475,161 @@ async def del_one(cb: types.CallbackQuery):
     q("DELETE FROM ads WHERE id=%s;", (ad_id,), "count")
     await replace_notice(cb, "🗑 E'lon o'chirildi.")
     await cb.answer("O'chirildi")
+
+
+# ---------------- TOP bo'limi ----------------
+
+@router.callback_query(F.data.startswith("adm:top:"))
+async def top_section(cb: types.CallbackQuery):
+    page = int(cb.data.split(":")[2])
+    total = q("SELECT COUNT(*) FROM top_requests WHERE status = 'pending';", mode="one")[0]
+    rows = q(
+        """SELECT r.id, u.full_name, r.days, r.price, r.created_at
+           FROM top_requests r JOIN users u ON u.user_id = r.user_id
+           WHERE r.status = 'pending' ORDER BY r.id LIMIT %s OFFSET %s;""",
+        (PAGE + 1, page * PAGE),
+    )
+    more = len(rows) > PAGE
+    rows = rows[:PAGE]
+    b = InlineKeyboardBuilder()
+    for req_id, name, days, price, created in rows:
+        b.button(
+            text=f"💳 {name} • {days} kun • {money(price)} • {created:%d.%m %H:%M}",
+            callback_data=f"adm:topreq:{req_id}",
+        )
+    b.button(text="🔥 Faol TOP e'lonlar", callback_data="adm:topact:0")
+    b.adjust(1)
+    b.row(*nav_row("adm:top", page, more))
+    text = (
+        "<b>🔥 TOP bo'limi</b>\n\n"
+        f"Tekshirilmagan cheklar: <b>{total}</b>\n"
+        "Chekni bosib ko'ring va tasdiqlang yoki rad eting."
+    )
+    await show(cb, text, b.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:topreq:"))
+async def top_request_open(cb: types.CallbackQuery):
+    req_id = int(cb.data.split(":")[2])
+    row = q(
+        """SELECT r.status, r.days, r.price, r.receipt_file_id, r.created_at, r.user_id,
+                  u.full_name, COALESCE(a.title, '(e''lon o''chirilgan)')
+           FROM top_requests r JOIN users u ON u.user_id = r.user_id
+           LEFT JOIN ads a ON a.id = r.ad_id WHERE r.id = %s;""",
+        (req_id,), "one",
+    )
+    if not row:
+        await cb.answer("Topilmadi", show_alert=True)
+        return
+    status, days, price, receipt, created, user_id, name, title = row
+    if status != "pending":
+        await cb.answer("Bu chek allaqachon ko'rib chiqilgan", show_alert=True)
+        return
+    await cb.message.answer_photo(
+        receipt,
+        caption=request_text(title, name, user_id, days, price, created),
+        parse_mode="HTML",
+        reply_markup=request_kb(req_id),
+    )
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:topok:"))
+async def top_approve(cb: types.CallbackQuery):
+    req_id = int(cb.data.split(":")[2])
+    row = q(
+        "UPDATE top_requests SET status = 'approved', decided_by = %s, decided_at = NOW() "
+        "WHERE id = %s AND status = 'pending' RETURNING ad_id, user_id, days;",
+        (cb.from_user.id, req_id), "one",
+    )
+    if not row:
+        await cb.answer("Bu chek allaqachon ko'rib chiqilgan", show_alert=True)
+        await replace_notice(cb, "ℹ️ Bu chek allaqachon ko'rib chiqilgan.")
+        return
+    ad_id, user_id, days = row
+    ad = q(
+        "UPDATE ads SET top_until = GREATEST(COALESCE(top_until, NOW()::timestamp), NOW()::timestamp) "
+        "+ make_interval(days => %s) WHERE id = %s RETURNING top_until;",
+        (days, ad_id), "one",
+    )
+    if not ad:
+        await replace_notice(cb, "⚠️ Chek tasdiqlandi, lekin e'lon topilmadi (o'chirilgan). Foydalanuvchi bilan bog'laning.")
+        try:
+            await cb.bot.send_message(
+                user_id,
+                "⚠️ To'lovingiz qabul qilindi, lekin e'loningiz topilmadi. Iltimos, admin bilan bog'laning"
+                + (f": {ADMIN_CONTACT}" if ADMIN_CONTACT else "."),
+            )
+        except Exception:
+            pass
+        await cb.answer("E'lon topilmadi", show_alert=True)
+        return
+    until = ad[0]
+    await replace_notice(cb, f"✅ Tasdiqlandi ({cb.from_user.full_name}). TOP {until:%d.%m.%Y} gacha.")
+    try:
+        await cb.bot.send_message(
+            user_id,
+            f"🔥 E'loningiz TOP bo'ldi!\n{until:%d.%m.%Y} gacha qidiruvda birinchi bo'lib chiqadi.",
+        )
+    except Exception:
+        pass
+    await cb.answer("✅ Tasdiqlandi", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm:topno:"))
+async def top_reject(cb: types.CallbackQuery):
+    req_id = int(cb.data.split(":")[2])
+    row = q(
+        "UPDATE top_requests SET status = 'rejected', decided_by = %s, decided_at = NOW() "
+        "WHERE id = %s AND status = 'pending' RETURNING user_id;",
+        (cb.from_user.id, req_id), "one",
+    )
+    if not row:
+        await cb.answer("Bu chek allaqachon ko'rib chiqilgan", show_alert=True)
+        await replace_notice(cb, "ℹ️ Bu chek allaqachon ko'rib chiqilgan.")
+        return
+    await replace_notice(cb, f"❌ Rad etildi ({cb.from_user.full_name}).")
+    try:
+        await cb.bot.send_message(
+            row[0],
+            "❌ To'lov cheki tasdiqlanmadi. Chek aniq ko'rinmagan yoki pul tushmagan bo'lishi mumkin."
+            + (f"\nSavol bo'lsa: {ADMIN_CONTACT}" if ADMIN_CONTACT else ""),
+        )
+    except Exception:
+        pass
+    await cb.answer("Rad etildi", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("adm:topact:"))
+async def top_active(cb: types.CallbackQuery):
+    page = int(cb.data.split(":")[2])
+    rows = q(
+        """SELECT a.title, u.full_name, a.top_until FROM ads a JOIN users u ON u.user_id = a.user_id
+           WHERE a.top_until IS NOT NULL AND a.top_until > NOW()
+           ORDER BY a.top_until LIMIT %s OFFSET %s;""",
+        (PAGE + 1, page * PAGE),
+    )
+    more = len(rows) > PAGE
+    rows = rows[:PAGE]
+    if rows:
+        lines = "\n".join(
+            f"🔥 <b>{html.escape(title or '')}</b>\n    {html.escape(name or '-')} • {until:%d.%m.%Y} gacha"
+            for title, name, until in rows
+        )
+        text = f"<b>🔥 Faol TOP e'lonlar</b> (sahifa {page + 1})\n\n{lines}"
+    else:
+        text = "Hozir faol TOP e'lon yo'q."
+    b = InlineKeyboardBuilder()
+    b.row(*nav_row("adm:topact", page, more))
+    await show(cb, text, b.as_markup())
+    await cb.answer()
+
+
+@router.callback_query(F.data.startswith("adm:imgok:"))
+async def image_ok(cb: types.CallbackQuery):
+    await replace_notice(cb, "✅ Rasm to'g'ri deb belgilandi.")
+    await cb.answer("Belgilandi")
 
 
 # ---------------- Yordamchi adminlar (faqat bosh admin) ----------------

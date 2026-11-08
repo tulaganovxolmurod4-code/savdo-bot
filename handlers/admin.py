@@ -1,4 +1,7 @@
+import asyncio
 import html
+import logging
+import time
 from aiogram import Router, types, F
 from aiogram.filters import Command, CommandObject, BaseFilter
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -28,22 +31,34 @@ LOC_PAGE = 10
 
 
 def q(sql, params=(), mode="all"):
+    """Bitta so'rov: autocommit bilan (COMMIT uchun qo'shimcha tarmoq qadami ketmaydi)."""
+    t0 = time.monotonic()
     conn = get_connection()
-    cur = conn.cursor()
     try:
-        cur.execute(sql, params)
-        res = None
-        if mode == "all":
-            res = cur.fetchall()
-        elif mode == "one":
-            res = cur.fetchone()
-        elif mode == "count":
-            res = cur.rowcount
-        conn.commit()
-        return res
+        conn.set_autocommit(True)
+        cur = conn.cursor()
+        try:
+            cur.execute(sql, params)
+            res = None
+            if mode == "all":
+                res = cur.fetchall()
+            elif mode == "one":
+                res = cur.fetchone()
+            elif mode == "count":
+                res = cur.rowcount
+            return res
+        finally:
+            cur.close()
     finally:
-        cur.close()
         conn.close()
+        spent = time.monotonic() - t0
+        if spent > 0.5:
+            logging.warning("Sekin so'rov: %.2f s | %s", spent, " ".join(sql.split())[:70])
+
+
+async def aq(sql, params=(), mode="all"):
+    """q() ning asinxron varianti: so'rov bot qolgan ishlarni to'xtatib qo'ymaydi."""
+    return await asyncio.to_thread(q, sql, params, mode)
 
 
 def can_private(viewer_id):
@@ -81,23 +96,28 @@ async def replace_notice(cb, text):
 
 # ---------------- Bosh sahifa ----------------
 
-def stats_text():
-    u = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE is_registered), COUNT(*) FILTER (WHERE is_banned) FROM users;", mode="one")
-    a = q("SELECT COUNT(*), COUNT(*) FILTER (WHERE status='active'), COUNT(*) FILTER (WHERE status='sold') FROM ads;", mode="one")
-    r = q("SELECT COUNT(DISTINCT seller_id) FROM reports WHERE resolved = FALSE;", mode="one")
-    t = q(
-        "SELECT (SELECT COUNT(*) FROM top_requests WHERE status = 'pending'), "
-        "(SELECT COUNT(*) FROM ads WHERE top_until IS NOT NULL AND top_until > NOW());",
+async def stats_text():
+    row = await aq(
+        """SELECT
+             (SELECT COUNT(*) FROM users WHERE is_registered),
+             (SELECT COUNT(*) FROM users WHERE is_banned),
+             (SELECT COUNT(*) FROM ads),
+             (SELECT COUNT(*) FROM ads WHERE status = 'active'),
+             (SELECT COUNT(*) FROM ads WHERE status = 'sold'),
+             (SELECT COUNT(DISTINCT seller_id) FROM reports WHERE resolved = FALSE),
+             (SELECT COUNT(*) FROM top_requests WHERE status = 'pending'),
+             (SELECT COUNT(*) FROM ads WHERE top_until IS NOT NULL AND top_until > NOW());""",
         mode="one",
     )
+    reg, banned, ads_total, ads_active, ads_sold, rep_sellers, top_pending, top_active_n = row
     return (
         "<b>🛠 Admin panel</b>\n\n"
-        f"👥 Ro'yxatdan o'tganlar: <b>{u[1]}</b> (bloklangan: {u[2]})\n"
-        f"📋 Jami e'lonlar: <b>{a[0]}</b>\n"
-        f"✅ Faol: <b>{a[1]}</b>\n"
-        f"💰 Sotilgan: <b>{a[2]}</b>\n"
-        f"🚩 Shikoyat tushgan sotuvchilar: <b>{r[0]}</b>\n"
-        f"🔥 TOP: kutayotgan cheklar <b>{t[0]}</b>, faol TOP e'lonlar <b>{t[1]}</b>"
+        f"👥 Ro'yxatdan o'tganlar: <b>{reg}</b> (bloklangan: {banned})\n"
+        f"📋 Jami e'lonlar: <b>{ads_total}</b>\n"
+        f"✅ Faol: <b>{ads_active}</b>\n"
+        f"💰 Sotilgan: <b>{ads_sold}</b>\n"
+        f"🚩 Shikoyat tushgan sotuvchilar: <b>{rep_sellers}</b>\n"
+        f"🔥 TOP: kutayotgan cheklar <b>{top_pending}</b>, faol TOP e'lonlar <b>{top_active_n}</b>"
     )
 
 
@@ -119,24 +139,25 @@ def panel_kb(viewer_id):
 @router.message(F.text == "🛠 Admin panel")
 @router.message(Command("admin"))
 async def panel(message: types.Message):
-    await message.answer(stats_text(), parse_mode="HTML", reply_markup=panel_kb(message.from_user.id))
+    await message.answer(await stats_text(), parse_mode="HTML", reply_markup=panel_kb(message.from_user.id))
 
 
 @router.callback_query(F.data == "adm:home")
 async def home(cb: types.CallbackQuery):
+    await cb.answer()
     try:
-        await cb.message.edit_text(stats_text(), parse_mode="HTML", reply_markup=panel_kb(cb.from_user.id))
+        await cb.message.edit_text(await stats_text(), parse_mode="HTML", reply_markup=panel_kb(cb.from_user.id))
     except Exception:
         pass
-    await cb.answer()
 
 
 # ---------------- Ro'yxatlar ----------------
 
 @router.callback_query(F.data.startswith("adm:users:"))
 async def users_list(cb: types.CallbackQuery):
+    await cb.answer()
     page = int(cb.data.split(":")[2])
-    rows = q(
+    rows = await aq(
         """SELECT u.user_id, u.full_name, u.is_banned, COUNT(a.id),
                   COUNT(a.id) FILTER (WHERE a.status='sold')
            FROM users u LEFT JOIN ads a ON a.user_id = u.user_id
@@ -157,13 +178,13 @@ async def users_list(cb: types.CallbackQuery):
     text = f"<b>👥 Foydalanuvchilar</b> (sahifa {page + 1})\n\nIsm yoki ID bo'yicha topish: /find" if rows \
         else "Hali ro'yxatdan o'tgan foydalanuvchi yo'q."
     await show(cb, text, b.as_markup())
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:black:"))
 async def black_list(cb: types.CallbackQuery):
+    await cb.answer()
     page = int(cb.data.split(":")[2])
-    rows = q(
+    rows = await aq(
         "SELECT user_id, full_name, ban_reason, ban_until FROM users WHERE is_banned "
         "ORDER BY user_id DESC LIMIT %s OFFSET %s;",
         (PAGE + 1, page * PAGE),
@@ -180,13 +201,13 @@ async def black_list(cb: types.CallbackQuery):
     text = f"<b>⚫ Qora ro'yxat</b> (sahifa {page + 1})\n\nBirini bosib, blokdan chiqarishingiz mumkin." if rows \
         else "Qora ro'yxat bo'sh."
     await show(cb, text, b.as_markup())
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:reps:"))
 async def reports_list(cb: types.CallbackQuery):
+    await cb.answer()
     page = int(cb.data.split(":")[2])
-    rows = q(
+    rows = await aq(
         """SELECT r.seller_id, u.full_name, COUNT(DISTINCT r.reporter_id) AS c
            FROM reports r JOIN users u ON u.user_id = r.seller_id
            WHERE r.resolved = FALSE
@@ -203,7 +224,6 @@ async def reports_list(cb: types.CallbackQuery):
     text = f"<b>🚩 Shikoyat tushgan sotuvchilar</b> (sahifa {page + 1})" if rows \
         else "Ko'rib chiqilmagan shikoyat yo'q."
     await show(cb, text, b.as_markup())
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:locs:"))
@@ -319,21 +339,21 @@ def user_kb(uid, banned, viewer_id):
 async def user_card(cb: types.CallbackQuery):
     uid = int(cb.data.split(":")[2])
     viewer = cb.from_user.id
-    u = q(
-        "SELECT full_name, username, phone, latitude, longitude, is_banned, created_at, ban_reason, ban_until "
-        "FROM users WHERE user_id=%s;",
+    u = await aq(
+        """SELECT full_name, username, phone, latitude, longitude, is_banned, created_at, ban_reason, ban_until,
+                  (SELECT COUNT(*) FROM ads WHERE user_id = usr.user_id),
+                  (SELECT COUNT(*) FROM ads WHERE user_id = usr.user_id AND status = 'active'),
+                  (SELECT COUNT(*) FROM ads WHERE user_id = usr.user_id AND status = 'sold'),
+                  (SELECT COUNT(DISTINCT reporter_id) FROM reports WHERE seller_id = usr.user_id AND resolved = FALSE)
+           FROM users usr WHERE usr.user_id = %s;""",
         (uid,), "one",
     )
     if not u:
         await cb.answer("Topilmadi", show_alert=True)
         return
-    name, username, phone, lat, lon, banned, created, ban_reason, ban_until = u
-    s = q(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE status='active'), COUNT(*) FILTER (WHERE status='sold') "
-        "FROM ads WHERE user_id=%s;",
-        (uid,), "one",
-    )
-    rep = q("SELECT COUNT(DISTINCT reporter_id) FROM reports WHERE seller_id=%s AND resolved=FALSE;", (uid,), "one")
+    name, username, phone, lat, lon, banned, created, ban_reason, ban_until = u[:9]
+    s = u[9:12]
+    rep = (u[12],)
 
     if is_super(uid):
         role = "👑 Bosh admin"
@@ -481,9 +501,10 @@ async def del_one(cb: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("adm:top:"))
 async def top_section(cb: types.CallbackQuery):
+    await cb.answer()
     page = int(cb.data.split(":")[2])
-    total = q("SELECT COUNT(*) FROM top_requests WHERE status = 'pending';", mode="one")[0]
-    rows = q(
+    total = (await aq("SELECT COUNT(*) FROM top_requests WHERE status = 'pending';", mode="one"))[0]
+    rows = await aq(
         """SELECT r.id, u.full_name, r.days, r.price, r.created_at
            FROM top_requests r JOIN users u ON u.user_id = r.user_id
            WHERE r.status = 'pending' ORDER BY r.id LIMIT %s OFFSET %s;""",
@@ -506,7 +527,6 @@ async def top_section(cb: types.CallbackQuery):
         "Chekni bosib ko'ring va tasdiqlang yoki rad eting."
     )
     await show(cb, text, b.as_markup())
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:topreq:"))
@@ -603,8 +623,9 @@ async def top_reject(cb: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith("adm:topact:"))
 async def top_active(cb: types.CallbackQuery):
+    await cb.answer()
     page = int(cb.data.split(":")[2])
-    rows = q(
+    rows = await aq(
         """SELECT a.title, u.full_name, a.top_until FROM ads a JOIN users u ON u.user_id = a.user_id
            WHERE a.top_until IS NOT NULL AND a.top_until > NOW()
            ORDER BY a.top_until LIMIT %s OFFSET %s;""",
@@ -623,7 +644,6 @@ async def top_active(cb: types.CallbackQuery):
     b = InlineKeyboardBuilder()
     b.row(*nav_row("adm:topact", page, more))
     await show(cb, text, b.as_markup())
-    await cb.answer()
 
 
 @router.callback_query(F.data.startswith("adm:imgok:"))

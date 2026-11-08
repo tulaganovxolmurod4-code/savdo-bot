@@ -11,7 +11,7 @@ from admins import notify_ids
 from categories import CAT_NAMES
 from database import get_connection
 from keyboards import main_menu
-from settings import ADMIN_CONTACT, TOP_CARD_INFO, TOP_PACKAGES, money
+from settings import ADMIN_CONTACT, TOP_CARD_HOLDER, TOP_CARD_NUMBER, TOP_PACKAGES, money
 
 router = Router()
 
@@ -100,6 +100,22 @@ def request_kb(req_id):
 
 # ---------------- Paketni tanlash ----------------
 
+def package_text(title):
+    return (
+        f"🔥 «{title}» e'lonini TOP qilasiz.\n\n"
+        "TOP e'lon o'z bo'limida va qidiruvda birinchi bo'lib, 🔥 belgisi bilan chiqadi.\n"
+        "Muddatni tanlang:"
+    )
+
+
+def package_kb(ad_id):
+    b = InlineKeyboardBuilder()
+    for days, price in TOP_PACKAGES.items():
+        b.button(text=f"🔥 {days} kun — {money(price)} so'm", callback_data=f"topd:{ad_id}:{days}")
+    b.adjust(1)
+    return b.as_markup()
+
+
 @router.callback_query(F.data.startswith("top:"))
 async def top_start(cb: types.CallbackQuery):
     ad_id = int(cb.data.split(":")[1])
@@ -107,16 +123,7 @@ async def top_start(cb: types.CallbackQuery):
     if not ad or ad[1] != "active":
         await cb.answer("Faqat faol e'lonni TOP qilish mumkin", show_alert=True)
         return
-    b = InlineKeyboardBuilder()
-    for days, price in TOP_PACKAGES.items():
-        b.button(text=f"🔥 {days} kun — {money(price)} so'm", callback_data=f"topd:{ad_id}:{days}")
-    b.adjust(1)
-    await cb.message.answer(
-        f"🔥 «{ad[0]}» e'lonini TOP qilasiz.\n\n"
-        "TOP e'lon o'z bo'limida va qidiruvda birinchi bo'lib, 🔥 belgisi bilan chiqadi.\n"
-        "Muddatni tanlang:",
-        reply_markup=b.as_markup(),
-    )
+    await cb.message.answer(package_text(ad[0]), reply_markup=package_kb(ad_id))
     await cb.answer()
 
 
@@ -133,8 +140,10 @@ async def top_package(cb: types.CallbackQuery, state: FSMContext):
         return
 
     price = TOP_PACKAGES[days]
-    if TOP_CARD_INFO:
-        card = f"💳 Karta: <code>{html.escape(TOP_CARD_INFO)}</code>"
+    if TOP_CARD_NUMBER:
+        card = f"💳 Karta: <code>{html.escape(TOP_CARD_NUMBER)}</code>"
+        if TOP_CARD_HOLDER:
+            card += f"\n👤 Qabul qiluvchi: {html.escape(TOP_CARD_HOLDER)}"
     else:
         contact = ADMIN_CONTACT or "admin"
         card = f"💳 Karta raqami uchun {html.escape(contact)} bilan bog'laning."

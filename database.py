@@ -1,10 +1,16 @@
 import threading
+import time
 import psycopg2
 from psycopg2 import pool
 from config import DATABASE_URL
 
 _pool = None
 _lock = threading.Lock()
+
+# Ulanish shuncha soniyadan ko'p ishlatilmagan bo'lsagina "tirikmi?" deb tekshiriladi.
+# Har safar tekshirish har so'rovga 2 ta ortiqcha tarmoq qadamini qo'shardi va botni sekinlashtirardi.
+PING_AFTER = 25
+_last_used = {}  # id(ulanish) -> oxirgi qaytarilgan vaqt
 
 
 def _get_pool():
@@ -35,6 +41,10 @@ class PooledConnection:
     def __getattr__(self, name):
         return getattr(self._conn, name)
 
+    def set_autocommit(self, value):
+        """Bitta so'rovlik ishlar uchun: COMMIT/ROLLBACK qadamlari kerak bo'lmaydi (tezroq)."""
+        self._conn.autocommit = value
+
     def close(self):
         if self._released:
             return
@@ -42,9 +52,13 @@ class PooledConnection:
         p = _get_pool()
         try:
             if self._conn.closed:
+                _last_used.pop(id(self._conn), None)
                 p.putconn(self._conn, close=True)
             else:
+                if self._conn.autocommit:
+                    self._conn.autocommit = False
                 self._conn.rollback()
+                _last_used[id(self._conn)] = time.monotonic()
                 p.putconn(self._conn)
         except Exception:
             try:
@@ -61,12 +75,15 @@ def get_connection():
         try:
             if conn.closed:
                 raise psycopg2.OperationalError("closed")
-            cur = conn.cursor()
-            cur.execute("SELECT 1")
-            cur.close()
-            conn.rollback()
+            idle = time.monotonic() - _last_used.get(id(conn), 0)
+            if idle > PING_AFTER:
+                cur = conn.cursor()
+                cur.execute("SELECT 1")
+                cur.close()
+                conn.rollback()
             return PooledConnection(conn)
         except Exception:
+            _last_used.pop(id(conn), None)
             try:
                 p.putconn(conn, close=True)
             except Exception:
@@ -182,6 +199,7 @@ def init_db():
 
 def get_user(user_id):
     conn = get_connection()
+    conn.set_autocommit(True)
     cur = conn.cursor()
     cur.execute(
         "SELECT user_id, full_name, username, phone, is_registered, is_banned, latitude, longitude, "
@@ -220,4 +238,22 @@ def release_expired_bans():
         conn.commit()
     finally:
         cur.close()
+        conn.close()
+
+
+def measure_latency(n=3):
+    """Bazaga bitta oddiy so'rov necha millisekund ketishini o'lchaydi (diagnostika uchun)."""
+    conn = get_connection()
+    try:
+        conn.set_autocommit(True)
+        cur = conn.cursor()
+        times = []
+        for _ in range(n):
+            t = time.monotonic()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            times.append(time.monotonic() - t)
+        cur.close()
+        return sum(times) / len(times) * 1000
+    finally:
         conn.close()

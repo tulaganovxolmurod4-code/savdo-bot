@@ -14,6 +14,7 @@ from moderation_ai import ai_flagged
 from image_check import check_photo
 from admins import notify_ids
 from settings import IMAGE_MAX_ATTEMPTS
+from handlers.top import package_kb, package_text
 
 router = Router()
 
@@ -451,7 +452,8 @@ async def process_photo(message: types.Message, state: FSMContext):
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Ha, tasdiqlash", callback_data="confirm_ad")
     builder.button(text="❌ Bekor qilish", callback_data="cancel_ad")
-    builder.adjust(2)
+    builder.button(text="🔥 TOP qilish va tasdiqlash", callback_data="confirm_top")
+    builder.adjust(2, 1)
     await message.answer_photo(
         photo=data["photo_id"],
         caption=text,
@@ -468,6 +470,15 @@ async def process_photo_invalid(message: types.Message):
 
 @router.callback_query(F.data == "confirm_ad")
 async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
+    await do_confirm(callback, state, with_top=False)
+
+
+@router.callback_query(F.data == "confirm_top")
+async def confirm_top(callback: types.CallbackQuery, state: FSMContext):
+    await do_confirm(callback, state, with_top=True)
+
+
+async def do_confirm(callback: types.CallbackQuery, state: FSMContext, with_top: bool):
     data = await state.get_data()
     user_id = callback.from_user.id
 
@@ -524,6 +535,8 @@ async def confirm_ad(callback: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await callback.message.answer("Quyidagi menyudan foydalanishingiz mumkin:", reply_markup=main_menu(user_id))
+    if with_top and new_ad_id:
+        await callback.message.answer(package_text(data.get("title")), reply_markup=package_kb(new_ad_id))
     if data.get("photo_flag") and new_ad_id:
         await notify_flagged_photo(
             callback.bot, new_ad_id, callback.from_user, data.get("title"),

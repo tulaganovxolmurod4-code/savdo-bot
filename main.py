@@ -7,7 +7,7 @@ import socketserver
 import threading
 from aiogram import Bot, Dispatcher
 from config import BOT_TOKEN
-from database import init_db, release_expired_bans
+from database import init_db, release_expired_bans, measure_latency
 from admins import load_helpers
 from handlers import start, add_ad, search, admin, complaints, top
 from image_check import enabled as image_check_enabled
@@ -53,6 +53,11 @@ async def main():
         init_db()
         load_helpers()
         logging.info("Ma'lumotlar bazasi muvaffaqiyatli ulandi va sozlandi.")
+        try:
+            ms = await asyncio.to_thread(measure_latency)
+            logging.info("Baza kechikishi: %.0f ms (bitta so'rovga)", ms)
+        except Exception:
+            logging.warning("Baza kechikishini o'lchab bo'lmadi")
     except Exception as e:
         logging.error(f"Ma'lumotlar bazasiga ulanishda xatolik: {e}")
         return
@@ -85,3 +90,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot to'xtatildi!")
+

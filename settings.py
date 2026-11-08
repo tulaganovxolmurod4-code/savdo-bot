@@ -13,9 +13,10 @@ HELPERS_SEE_PRIVATE = False   # yordamchi adminlar telefon va joylashuvni ko'ra 
 # TOP e'lon narxlari: kun -> so'm
 TOP_PACKAGES = {5: 15000, 10: 23000}
 
-# TOP uchun to'lov qabul qilinadigan karta. Render Environment'ga TOP_CARD_INFO nomi bilan qo'ying
-# (masalan: 8600 1234 5678 9012, Ism Familiya). Kodga yozmang.
-TOP_CARD_INFO = os.environ.get("TOP_CARD_INFO", "")
+# TOP uchun to'lov qabul qilinadigan karta (xaridorlarga ko'rsatiladi).
+# Render Environment'da TOP_CARD_NUMBER va TOP_CARD_HOLDER qo'yilsa, shular ishlatiladi.
+TOP_CARD_NUMBER = os.environ.get("TOP_CARD_NUMBER", "5614682111766830")
+TOP_CARD_HOLDER = os.environ.get("TOP_CARD_HOLDER", "Tulaganov Xolmurod")
 
 # Rasm bo'limga mos kelmasa, necha urinishdan keyin e'lon admin tekshiruviga yuboriladi
 IMAGE_MAX_ATTEMPTS = 3
